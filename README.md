@@ -1,2 +1,173 @@
-# sleep-score-algorithm
-This sleep scoring algorithm combines absolute sleep quality, relative performance (Z-score), and trend analysis to generate a 0-100 sleep score. It has been validated on a real dataset.
+# 基于可穿戴设备数据的智能睡眠评分模型 
+
+本模型基于 Whoop 健身手环数据，实现了一套从基础版到进阶版的睡眠评分系统，最终输出一个 0-100 的整数分数。进阶版算法引入了滚动基准（Rolling Baseline）、历史表现分布（Z-score）及近期趋势分析（Trend Score），旨在提供**个性化、多维度且心理稳定**的睡眠质量评估。
+
+## 📂 仓库文件说明
+
+| 文件名 | 描述 |
+| :--- | :--- |
+| `calculate_sleep_score_basic.py` | **睡眠评分算法 - 基础版**：基于绝对阈值和固定公式计算原始得分。 |
+| `calculate_sleep_score_advanced.py` | **睡眠评分算法 - 进阶版**：在基础版之上，增加了滚动基准（Rolling Baseline）、Z-score 标准化和趋势分数（Trend Score）计算，实现个性化评分。 |
+| `whoop_fitness_dataset_100k.zip` | **原始数据集**：解压后为 `whoop_fitness_dataset_100k.csv`，包含 10 万条健康、睡眠与健身记录。 |
+| `results.zip` | **运行结果**：解压后为`results.csv`，包含原始数据集的部分条目以及模型输出的睡眠质量分数。 |
+| `dataset_description.txt` | **数据字典**：详细描述了原始数据集与输出数据集中每一列数据的含义。 |
+
+---
+
+## 📊 关于数据集
+
+### 数据来源
+*   **来源平台**: [Kaggle - Whoop Fitness Dataset](https://www.kaggle.com/datasets/likithagedipudi/whoop-fitness-dataset/data)
+*   **数据集概览**: 这是一个综合性的合成数据集，包含 **286 名** Whoop 健身手环用户在 **13 个月**（2023 年 1 月 - 2024 年 2 月）期间生成的 **100,000 条** 每日健康与健身记录。
+
+### 详细描述
+*   具体的字段定义、单位及统计信息请参阅仓库中的 `dataset_description.txt` 文件。
+
+---
+
+## 睡眠评分算法实现详解
+
+### 1. 整体架构与加权策略
+
+算法采用**分层加权融合**机制，从微观的生理指标逐步聚合到宏观的最终得分。
+
+#### 1.1 维度加权 (Raw Score Dimensions)
+原始睡眠得分 (`raw_sleep_score`) 由四个核心维度组成，权重分配基于睡眠科学中各因素对恢复质量的影响程度：
+
+$$ \text{Raw Score} = 0.3 \cdot S_1 + 0.25 \cdot S_2 + 0.3 \cdot S_3 + 0.15 \cdot S_4 $$
+
+| 维度 | 权重 | 包含指标 | 设计理由 |
+| :--- | :---: | :--- | :--- |
+| **D1: 时长与效率** | **30%** | 睡眠时长、睡眠效率 | 睡眠的“量”是恢复的基础，“效率”反映了睡眠的紧凑度。 |
+| **D2: 睡眠结构** | **25%** | 深睡比例、REM 比例 | 特定的睡眠阶段对体力恢复（深睡）和脑力/情绪恢复（REM）至关重要。 |
+| **D3: 生理恢复** | **30%** | HRV、静息心率、呼吸率 | 反映自主神经系统的恢复状态，是判断“睡得是否解乏”的核心生理依据。 |
+| **D4: 潜伏与连续** | **15%** | 入睡时间、夜间醒来次数 | 衡量入睡难度和睡眠维持能力（连续性），影响主观睡眠体验。 |
+
+#### 1.2 最终融合加权 (Final Score Fusion)
+为了平衡“当晚绝对表现”与“近期趋势”，最终得分引入了趋势修正：
+
+$$ \text{Final Score} = 0.75 \cdot \text{Z-Normalized Score} + 0.25 \cdot \text{Trend Score} $$
+
+*   **状态权重 (0.75)**：确保分数主要反映当晚的真实睡眠质量。
+*   **趋势权重 (0.25)**：给予持续改善或恶化的趋势一定的奖惩，增加分数的指导意义，同时避免单波动的过度干扰。
+
+---
+
+### 2. 各维度详细设计与数学公式
+
+#### 2.1 维度一：睡眠时长与效率 (Sleep Duration & Efficiency)
+
+**睡眠时长：非对称高斯函数**  
+睡眠时长并非越多越好，且“不足”比“过量”的危害更大。因此采用**非对称高斯分布**。
+*   **目标值**: 7.5 小时
+*   **左侧标准差 ($\sigma_{low}$)**: 1.2 (对缺觉惩罚更严厉，曲线下降更快)
+*   **右侧标准差 ($\sigma_{high}$)**: 2.0 (对多睡容忍度较高，曲线下降平缓)
+
+$$
+S_{\text{duration}} = 100 \cdot \exp\left( -\frac{(h - 7.5)^2}{2\sigma^2} \right), \quad 
+\sigma = \begin{cases} 
+1.2, & \text{if } h < 7.5 \\ 
+2.0, & \text{if } h \ge 7.5 
+\end{cases}
+$$
+
+**睡眠效率：分段线性函数**  
+睡眠效率（实际睡着时间/卧床时间）存在明显的阈值效应，反映睡眠的**紧凑度**。
+*   **≥ 90%**: 满分 (100)，优秀睡眠的标志。
+*   **85% - 90%**: 线性增长，从 80 分到 100 分。
+*   **70% - 85%**: 线性增长，从 0 分到 80 分。
+*   **< 70%**: 0 分，表明睡眠极度碎片化或卧床时间过长。
+
+$$
+S_{\text{eff}} = \begin{cases} 
+100 & h_{\text{eff}} \ge 90 \\
+80 + \frac{h_{\text{eff}} - 85}{5} \cdot 20 & 85 \le h_{\text{eff}} < 90 \\
+\frac{h_{\text{eff}} - 70}{15} \cdot 80 & 70 \le h_{\text{eff}} < 85 \\
+0 & h_{\text{eff}} < 70
+\end{cases}
+$$
+
+#### 2.2 维度二：睡眠结构 (Sleep Architecture)
+
+基于深睡 (Deep) 和快速眼动 (REM) 占总睡眠时长的比例进行评分。采用**线性容差模型**，允许一定范围内的波动。
+*   **目标深睡比例**: 18% ($\pm 8\%$)
+*   **目标 REM 比例**: 23% ($\pm 8\%$)
+
+$$
+S_{\text{stage}} = 100 \cdot \max\left(0, 1 - \frac{|p_{\text{actual}} - p_{\text{target}}|}{\text{tolerance}}\right)
+$$
+
+其中 $p$ 为该阶段占总睡眠时长的比例。若偏差超过容差值，该项得分为 0。
+
+#### 2.3 维度三：生理恢复指标 (Physiological Recovery)
+
+此维度完全基于**相对值**（当日值 vs. 滚动基准值），以消除个体差异。
+
+**HRV (心率变异性): Sigmoid 映射**  
+HRV 越高代表恢复越好。使用 Sigmoid 函数将比率（当日值/滚动基准值）映射到 0-100，对低比率敏感，对高比率饱和。
+*   $k = 4.62$ (增长系数)
+*   $x_0 = 0.7$ (中心点，即 HRV 为基准值的 70% 时得分为 50)
+
+$$
+S_{\text{hrv}} = 100 \cdot \sigma\left( k \cdot (\frac{\text{HRV}_{\text{curr}}}{\text{HRV}_{\text{base}}} - x_0) \right), \quad \sigma(x) = \frac{1}{1+e^{-x}}
+$$
+
+**RHR (静息心率): 非对称高斯惩罚**  
+心率**升高**通常意味着压力或疲劳，需严厉惩罚；心率**降低**通常是好事，但收益递减。
+*   $\Delta = \text{RHR}_{\text{curr}} - \text{RHR}_{\text{base}}$
+*   $\sigma_{\text{low}} = 25$ (心率降低时，曲线平缓，得分接近 100)
+*   $\sigma_{\text{high}} = 10$ (心率升高时，曲线陡峭，得分迅速下降)
+
+$$
+S_{\text{rhr}} = 100 \cdot \exp\left( -0.5 \cdot \left(\frac{\Delta}{\sigma}\right)^2 \right), \quad \sigma = \begin{cases} 25 & \Delta < 0 \\ 10 & \Delta \ge 0 \end{cases}
+$$
+
+**呼吸率: 对称高斯**  
+偏离目标值 (16 次/分) 无论高低均视为异常。
+$$
+S_{\text{rr}} = 100 \cdot \exp\left( -0.5 \cdot \left(\frac{|\text{RR} - 16|}{4}\right)^2 \right)
+$$
+
+#### 2.4 维度四：入睡潜伏与连续性 (Sleep Latency & Continuity)
+
+*   **潜伏期**: 最佳区间为 5-15 分钟。过短 (<5min) 可能暗示睡眠剥夺，过长 (>15min) 暗示失眠。
+*   **连续性**: 基于醒来次数线性扣分，每多一次醒来，分数降低 20%，5 次以上为 0 分。**这是衡量睡眠是否被打断的核心指标。**
+
+---
+
+### 3. 标准化与趋势修正 (Normalization & Trend)
+
+为了让分数对不同用户公平（例如：一个常年睡 6 小时的人突然睡 7 小时，应比常年睡 9 小时的人睡 7 小时获得更高的相对评价），这里引入了统计学处理。
+
+#### 3.1 Z-Score 标准化与 Sigmoid 重映射
+计算用户过去 7 天原始得分的均值 ($\mu$) 和标准差 ($\sigma$)。
+
+  **计算 Z-Score**:
+    $$ z = \frac{\text{Raw Score} - \mu}{\sigma} $$
+  **Sigmoid 映射**:
+    将 $z$ 映射回 0-100 区间，并加入偏置 ($bias=1.5$) 使平均分略高于 50，符合正向激励心理。
+    $$ S_{\text{norm}} = 100 \cdot \frac{1}{1 + e^{-(1 \cdot z + 1.5)}} $$
+
+#### 3.2 趋势斜率计算
+利用最近 7 天的原始得分进行线性回归，计算斜率 ($m$)。
+$$ m = \text{slope}(\text{Scores}_{t-6}, \dots, \text{Scores}_t) $$
+
+将斜率通过双曲正切函数 ($\tanh$) 压缩到有限区间，避免极端趋势破坏总分：
+$$ S_{\text{trend}} = 80 + 25 \cdot \tanh\left(\frac{m}{4}\right) $$
+*   当趋势极好时，此项趋近 105 (截断为 100)。
+*   当趋势极差时，此项趋近 55。
+*   无趋势时，此项为 80 (作为基准补充)。
+
+---
+
+### 4. 最终输出
+
+最终得分经过加权求和后，四舍五入取整，确保输出为 [0, 100] 之间的整数。
+
+$$ \text{Final Score} = \text{round}\left( 0.75 \cdot S_{\text{norm}} + 0.25 \cdot S_{\text{trend}} \right) $$
+
+#### 算法特性总结
+1.  **个性化基准**: 使用 Rolling Baseline 和 Z-score，解决了“甲之蜜糖，乙之砒霜”的问题。
+2.  **非对称惩罚**: 在时长、心率等关键指标上，对“不足”或“恶化”的惩罚力度大于对“过量”或“改善”的奖励，符合生理学风险特征。
+3.  **心理稳定性**: 通过 Sigmoid 映射和趋势平滑，避免了分数因单日数据波动而剧烈跳变，提升用户体验。
+4.  **维度解耦**: 明确区分了“效率”（紧凑度）与“连续性”（抗干扰能力），使评分逻辑更加严谨。
