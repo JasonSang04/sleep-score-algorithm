@@ -57,6 +57,10 @@ $$ \text{Final Score} = 0.75 \cdot \text{Z-Normalized Score} + 0.25 \cdot \text{
 
 #### 2.1 维度一：睡眠时长与效率 (Sleep Duration & Efficiency)
 
+$$
+S_1 = 0.6 \cdot S_{\text{duration}} + 0.4 \cdot S_{\text{eff}}
+$$
+
 **睡眠时长：非对称高斯函数**  
 睡眠时长并非越多越好，且“不足”比“过量”的危害更大。因此采用**非对称高斯分布**。
 *   **目标值**: 7.5 小时
@@ -89,9 +93,14 @@ $$
 
 #### 2.2 维度二：睡眠结构 (Sleep Architecture)
 
+$$
+S_2 = 0.6 \cdot S_{\text{deep}} + 0.4 \cdot S_{\text{rem}}
+$$
+
 基于深睡 (Deep) 和快速眼动 (REM) 占总睡眠时长的比例进行评分。采用**线性容差模型**，允许一定范围内的波动。
-*   **目标深睡比例**: 18% ($\pm 8\%$)
-*   **目标 REM 比例**: 23% ($\pm 8\%$)
+
+*   **目标深睡比例**: 18% ($\pm 8$%)
+*   **目标 REM 比例**: 23% ($\pm 8$%)
 
 $$
 S_{\text{stage}} = 100 \cdot \max\left(0, 1 - \frac{|p_{\text{actual}} - p_{\text{target}}|}{\text{tolerance}}\right)
@@ -100,6 +109,10 @@ $$
 其中 $p$ 为该阶段占总睡眠时长的比例。若偏差超过容差值，该项得分为 0。
 
 #### 2.3 维度三：生理恢复指标 (Physiological Recovery)
+
+$$
+S_3 = 0.6 \cdot S_{\text{hrv}} + 0.25 \cdot S_{\text{rhr}} + 0.15 \cdot S_{\text{rr}}
+$$
 
 此维度完全基于**相对值**（当日值 vs. 滚动基准值），以消除个体差异。
 
@@ -114,24 +127,50 @@ $$
 
 **RHR (静息心率): 非对称高斯惩罚**  
 心率**升高**通常意味着压力或疲劳，需严厉惩罚；心率**降低**通常是好事，但收益递减。
-*   $\Delta = \text{RHR}_{\text{curr}} - \text{RHR}_{\text{base}}$
+*   $\Delta = \text{RHR}\_{\text{curr}} - \text{RHR}\_{\text{base}}$
 *   $\sigma_{\text{low}} = 25$ (心率降低时，曲线平缓，得分接近 100)
 *   $\sigma_{\text{high}} = 10$ (心率升高时，曲线陡峭，得分迅速下降)
 
 $$
-S_{\text{rhr}} = 100 \cdot \exp\left( -0.5 \cdot \left(\frac{\Delta}{\sigma}\right)^2 \right), \quad \sigma = \begin{cases} 25 & \Delta < 0 \\ 10 & \Delta \ge 0 \end{cases}
+S_{\text{rhr}} = 100 \cdot \exp\left( -0.5 \cdot \left(\frac{\Delta}{\sigma}\right)^2 \right), \quad 
+\sigma = \begin{cases} 
+25, & \text{if } \Delta < 0 \\ 
+10, & \text{if } \Delta \ge 0 
+\end{cases}
 $$
 
-**呼吸率: 对称高斯**  
+**呼吸率: 对称高斯惩罚**  
 偏离目标值 (16 次/分) 无论高低均视为异常。
+
 $$
 S_{\text{rr}} = 100 \cdot \exp\left( -0.5 \cdot \left(\frac{|\text{RR} - 16|}{4}\right)^2 \right)
 $$
 
 #### 2.4 维度四：入睡潜伏与连续性 (Sleep Latency & Continuity)
 
-*   **潜伏期**: 最佳区间为 5-15 分钟。过短 (<5min) 可能暗示睡眠剥夺，过长 (>15min) 暗示失眠。
-*   **连续性**: 基于醒来次数线性扣分，每多一次醒来，分数降低 20%，5 次以上为 0 分。**这是衡量睡眠是否被打断的核心指标。**
+$$
+S_4 = 0.4 \cdot S_{\text{latency}} + 0.6 \cdot S_{\text{continuity}}
+$$
+
+**潜伏期**: 最佳区间为 5-15 分钟。过短 (<5min) 可能暗示睡眠剥夺，过长 (>15min) 暗示失眠。
+  
+*   **< 5 分钟**: 可能过度疲劳，得分随时间线性增加 (90-100)。
+*   **5 - 15 分钟**: 理想范围，满分 (100)。
+*   **> 15 分钟**: 入睡困难，每多 1 分钟扣 2.22 分。
+
+$$
+S_{\text{latency}} = \begin{cases} 
+90 + 2L & \text{if } L < 5 \\
+100 & \text{if } 5 \le L \le 15 \\
+\max(0, 100 - 2.22(L - 15)) & \text{if } L > 15
+\end{cases}
+$$
+
+**连续性**: 基于醒来次数线性扣分，每多一次醒来，分数降低 20%，5 次以上为 0 分。**这是衡量睡眠是否被打断的核心指标。**
+
+$$
+S_{\text{continuity}} = 100 \cdot \max\left(0, 1 - \frac{W}{5}\right)
+$$
 
 ---
 
@@ -142,21 +181,39 @@ $$
 #### 3.1 Z-Score 标准化与 Sigmoid 重映射
 计算用户过去 7 天原始得分的均值 ($\mu$) 和标准差 ($\sigma$)。
 
-  **计算 Z-Score**:
-    $$ z = \frac{\text{Raw Score} - \mu}{\sigma} $$
-  **Sigmoid 映射**:
-    将 $z$ 映射回 0-100 区间，并加入偏置 ($bias=1.5$) 使平均分略高于 50，符合正向激励心理。
-    $$ S_{\text{norm}} = 100 \cdot \frac{1}{1 + e^{-(1 \cdot z + 1.5)}} $$
+**计算 Z-Score**:
+  
+$$ 
+z = \frac{\text{Raw Score} - \mu}{\sigma} 
+$$
+    
+**Sigmoid 重映射**:
+将 $z$ 映射回 0-100 区间，并加入偏置 ($bias$) 使平均分略高于 50，符合正向激励心理。
+*   $k = 1$ (斜率系数)
+*   $bias = 1.5$ (偏置) 
+    
+$$ 
+S_{\text{norm}} = 100 \cdot \frac{1}{1 + e^{-(k \cdot z + bias)}} 
+$$
 
 #### 3.2 趋势斜率计算
 利用最近 7 天的原始得分进行线性回归，计算斜率 ($m$)。
-$$ m = \text{slope}(\text{Scores}_{t-6}, \dots, \text{Scores}_t) $$
+
+$$ 
+m = \text{slope}(\text{Scores}_{t-6}, \dots, \text{Scores}_t) 
+$$
 
 将斜率通过双曲正切函数 ($\tanh$) 压缩到有限区间，避免极端趋势破坏总分：
-$$ S_{\text{trend}} = 80 + 25 \cdot \tanh\left(\frac{m}{4}\right) $$
-*   当趋势极好时，此项趋近 105 (截断为 100)。
-*   当趋势极差时，此项趋近 55。
-*   无趋势时，此项为 80 (作为基准补充)。
+
+*   $sensitivity = 4$ (缩放因子) 
+
+$$ 
+S_{\text{trend}} = 80 + 25 \cdot \tanh\left(\frac{m}{sensitivity}\right) 
+$$
+
+*   基准分：当无明显趋势变化时（斜率为 0），得分为 80 分，体现对稳定状态的默认认可。
+*   正向激励：当趋势显著向好时，分数在基准上最高增加 25 分（理论值 105），经上限截断后，最高得分为 100 分。
+*   负向惩罚：当趋势显著恶化时，分数在基准上最多扣除 25 分，最低得分为 55 分（设有保底机制，避免分数归零）。
 
 ---
 
@@ -164,7 +221,9 @@ $$ S_{\text{trend}} = 80 + 25 \cdot \tanh\left(\frac{m}{4}\right) $$
 
 最终得分经过加权求和后，四舍五入取整，确保输出为 [0, 100] 之间的整数。
 
-$$ \text{Final Score} = \text{round}\left( 0.75 \cdot S_{\text{norm}} + 0.25 \cdot S_{\text{trend}} \right) $$
+$$ 
+\text{Final Score} = \text{round}\left( 0.75 \cdot S_{\text{norm}} + 0.25 \cdot S_{\text{trend}} \right) 
+$$
 
 #### 算法特性总结
 1.  **个性化基准**: 使用 Rolling Baseline 和 Z-score，解决了“甲之蜜糖，乙之砒霜”的问题。
